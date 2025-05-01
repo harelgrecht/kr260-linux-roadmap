@@ -50,14 +50,14 @@ Assumes PetaLinux tools are installed.
 
 ```bash
 # Create a module project
-petalinux-create -t modules -n <modulename> --enable
+petalinux-create -t modules -n customuart --enable
 #module name cannot use'_' or '-' or capslock.
 
 # Navigate to the module dir
-cd project-spec/meta-user/recipes-modules/<modulename>/files
+cd project-spec/meta-user/recipes-modules/customuart/files
 
 # Implement the module in the .c file, when finished
-petalinux-build -c <modulename>
+petalinux-build -c customuart
 
 # Transfter the .ko file to the running linux board
 
@@ -67,8 +67,8 @@ sudo ifconfig <device> 192.168.0.100
 # On running linux board
 sudo ifconfig <device> 192.168.0.10
 
-cd build/tmp/sysroots-components/xilinx_k26_kr/<modulename>/lib/modules/6.1.5-xilinx-v2023.1/extra/
-scp -r <modulename>.ko <username>@<target ip>:/home/<username>
+cd build/tmp/sysroots-components/xilinx_k26_kr/customuart/lib/modules/6.1.5-xilinx-v2023.1/extra/
+scp -r customuart.ko <username>@<target ip>:/home/<username>
 ```
 
 ---
