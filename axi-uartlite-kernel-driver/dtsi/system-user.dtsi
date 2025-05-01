@@ -1,0 +1,5 @@
+/include/ "system-conf.dtsi"
+
+&axi_uartlite_0 {
+    compatible = "harel,customuart";
+};
