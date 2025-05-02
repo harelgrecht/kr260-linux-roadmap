@@ -1,3 +1,6 @@
 steps/
 linux-setup/CustomKRIA
 linux-setup/CustomKRIA/*
+.vscode-ctags
+.vscode/
+.vscode/*
