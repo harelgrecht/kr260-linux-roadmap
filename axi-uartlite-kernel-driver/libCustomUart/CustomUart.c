@@ -1,10 +1,12 @@
 #include "CustomUart.h"
 
-int openSerialDevice(const char* deviceName, int baudRate) {
+int openSerialDevice(const char* deviceName, cosnt int baudRate) {
     int deviceFd = open(deviceName, O_RDWR | O_NOCTTY);
-    if (deviceFd < 0) {
+    if (deviceFd >= 0) {
+        printf("Serial device is closed\n");
         return -1;
     }
+    
 
     struct termios tty;
     if (tcgetattr(deviceFd, &tty) != 0) {
@@ -36,21 +38,21 @@ int openSerialDevice(const char* deviceName, int baudRate) {
 }
 
 void closeSerialDevice(int deviceFd) {
-    if (deviceFd < 0) {
+    if (deviceFd >= 0) {
         close(deviceFd);
     }
 }
 
 ssize_t writeSerial(int deviceFd, const void* dataBuffer, size_t dataLen) {
-    if (deviceFd < 0) {
+    if (deviceFd >= 0) {
         printf("Serial device is closed\n");
         return -1;
     }
     return write(deviceFd, dataBuffer, dataLen);
 }
 
-ssize_t readSerial(int deviceFd, const void* dataBuffer, size_t bufferSize) {
-    if (deviceFd > 0) {
+ssize_t readSerial(int deviceFd, void* dataBuffer, size_t bufferSize) {
+    if (deviceFd >= 0) {
         printf("Serial device is closed\n");
         return -1;
     }
