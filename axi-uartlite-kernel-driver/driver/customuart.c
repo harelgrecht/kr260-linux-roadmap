@@ -59,6 +59,82 @@ static struct file_operations uart_fops = {
     .write = uart_write,
 };
 
+
+static int uart_device_probe(struct platform_device *plat_device) {
+    struct resource *res;
+    
+    dev_info(&plat_device->dev, "Probing custom uart device...\n\n");
+    
+    //getting the respiurces from the DT
+    res = platform_get_resource(plat_device, IORESOURCE_MEM, 0);
+    if(!res) {
+        dev_err(&plat_dev -> dev, "Failde to MAP IO memprt\n\n");
+        return -ENODEV;
+    }
+
+    // map the physical addres to the kernel
+    uart_base = devm_ioremap_resource(&plat_dev -> dev, res);
+    if (IS_ERR(uart_base)) {
+        dev_err(&plat_dev->dev, "Failed to map IO memory\n");
+        return PTR_ERR(uart_base);
+    }
+    
+    // Register character device
+    major = register_chrdev(0, DRIVER_NAME, &uart_fops);
+    if (major < 0) {
+        dev_err(&plat_device->dev, "Failed to register char device\n");
+        return major;
+    }
+
+    // Create device class
+    uart_class = class_create(THIS_MODULE, DRIVER_NAME);
+    if (IS_ERR(uart_class)) {
+        unregister_chrdev(major, DRIVER_NAME);
+        dev_err(&plat_device->dev, "Failed to create class\n");
+        return PTR_ERR(uart_class);
+    }
+    
+    // Create device node /dev/ttyCustomUart
+    uart_device = device_create(uart_class, NULL, MKDEV(major, 0), NULL, DRIVER_NAME);
+    if (IS_ERR(uart_device)) {
+        class_destroy(uart_class);
+        unregister_chrdev(major, DRIVER_NAME);
+        dev_err(&plat_device->dev, "Failed to create device\n");
+        return PTR_ERR(uart_device);
+    }
+    
+    dev_info(&plat_device->dev, "Custom UART initialized at %p\n", uart_base);
+    return 0;
+}
+
+static int uart_device_remove(struct platform_device *pdev) {
+    device_destroy(uart_class, MKDEV(major, 0));
+    class_destroy(uart_class);
+    unregister_chrdev(major, DRIVER_NAME);
+    printk(KERN_INFO "Custom UART driver removed\n");
+    return 0;
+}
+
+static const struct of_device_id custom_uart_of_match[] = {
+    { .compatible = "harel,customuart" },
+    {},
+};
+MODULE_DEVICE_TABLE(of, custom_uart_of_match);
+
+static struct platform_driver custom_uart_driver = {
+    .driver = {
+        .name = DRIVER_NAME,
+        .of_match_table = custom_uart_of_match,
+    },
+    .probe = uart_device_probe,
+    .remove = uart_device_remove,
+};
+
+module_platform_driver(custom_uart_driver);
+
+
+
+/* 
 static int __init uart_device_init(void) {
     printk(KERN_INFO "Initializing uart device...\n");
 
@@ -104,9 +180,9 @@ static void __exit uart_device_exit(void) {
     printk(KERN_INFO "UART device driver unloaded\n");
 }
 
-
 module_init(uart_device_init);
 module_exit(uart_device_exit);
+*/
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Harel");
