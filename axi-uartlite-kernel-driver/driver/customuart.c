@@ -87,15 +87,8 @@ static int __init uart_device_init(void) {
         class_destroy(uart_class);
         unregister_chrdev(major, DRIVER_NAME);
         printk(KERN_ERR "Failed to create device\n");
-        return PTR_ERR(uart_device);uart_device = device_create(uart_class, NULL, MKDEV(major, 0), NULL, "ttyCustomUart");
-if (IS_ERR(uart_device)) {
-    class_destroy(uart_class);
-    unregister_chrdev(major, DRIVER_NAME);
-    printk(KERN_ERR "Failed to create device\n");
-    return PTR_ERR(uart_device);
-}
+        return PTR_ERR(uart_device);
     }
-
     printk(KERN_INFO "Mapping UART base succeeded\n");
     printk(KERN_INFO "UART base initialized\n");
     return 0;
