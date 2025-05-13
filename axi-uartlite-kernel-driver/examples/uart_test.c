@@ -3,7 +3,7 @@
 #define DEVICE_PATH "/dev/ttyCustomUart"
 
 int main() {
-    int fd = openSerialDevice(DEVICE_PATH, B115200);
+    int fd = openSerialDevice(DEVICE_PATH, 115200);
     if (fd < 0) {
         printf("Failed to open UART device\n");
         return 1;

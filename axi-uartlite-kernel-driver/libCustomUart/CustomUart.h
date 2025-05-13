@@ -6,17 +6,16 @@
 #include <unistd.h>
 #include <termios.h>
 #include <errno.h>
-#include <asm-generic/termbits.h>
-
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int openSerialDevice(const char* devicePath, int baudRate);
+int openSerialDevice(const char* devicePath, const int baudRate);
 void closeSerialDevice(int deviceFd);
 ssize_t writeSerial(int deviceFd, const void* dataBuffer, size_t dataLen);
-ssize_t readSerial(int deviceFd, const void* dataBuffer, size_t dataLen);
+ssize_t readSerial(int deviceFd, void* dataBuffer, size_t dataLen);
 
 #ifdef __cplusplus
 }
