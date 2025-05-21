@@ -1,9 +1,10 @@
 #include <linux/module.h>
-#include <linux/fs.h>
-#include <linux/uaccess.h>
-#include <linux/io.h>
 #include <linux/platform_device.h>
-#include <linux/device.h>
+#include <linux/of.h>
+#include <linux/io.h>
+#include <linux/serial_core.h>
+#include <linux/serial_reg.h>
+#include <linux/tty_flip.h>
 
 #define DRIVER_NAME "customuart"
 #define UART_BASE_ADDR 0xA0010000
@@ -12,106 +13,176 @@
 #define UART_STATUS_REG 0x8
 #define UART_CTRL_REG 0xC
 
-static int major; // number to tell which driver handle which device
-// static int minor; // number used by the driver it self to diffrentiate which device is operating
-static void __iomem *uart_base;
-static struct class*  uart_class  = NULL;
-static struct device* uart_device = NULL;
+#define TX_FIFO_FULL_BIT_INDEX 3
+#define RX_FIFO_EMPTY_BIT_INDEX 0
 
-static ssize_t uart_write(struct file* file, const char __user* buf, size_t count, loff_t* ppos) {
-    size_t i;
-    char write_buf;
-    int tx_fifo_full_bit = 3;
-
-    for(i = 0; i < count; i++) {
-        if(copy_from_user(&write_buf, buf + i, 1)) { //copying from the user space buffer, copying buf into write_buf
-            return -EFAULT;
-        }
-        
-        while(ioread32(uart_base + UART_STATUS_REG) & (1 << tx_fifo_full_bit)) { // TX_FIFO is Full wait to be empty
-            cpu_relax();
-        }
-        iowrite32(write_buf, uart_base + UART_TX_REG);
-    }
-    return count;
-}
-
-static ssize_t uart_read(struct file* file, char __user* buf, size_t count,loff_t* ppos) {
-    char read_buf;
-    int rx_fifo_empty_bit = 0;
-    size_t i;
-
-    for(i = 0; i < count; i++) {
-        while((ioread32(uart_base + UART_STATUS_REG) & (1 << rx_fifo_empty_bit)) == 0) { // wait for RX_VALID_FIFO flag to be '1'
-            cpu_relax();
-        }
-        read_buf = ioread32(uart_base + UART_RX_REG) & 0xFF;
-        if(copy_to_user(buf + i, &read_buf, 1)) {
-            return -EFAULT;
-        }
-    }
-    return count;
-}
-
-static struct file_operations uart_fops = {
-    .owner = THIS_MODULE,
-    .read = uart_read,
-    .write = uart_write,
+struct custom_uart_port {
+    struct uart_port port;
+    void __iomem *uart_base;
 };
 
+static struct custom_uart_driver {
+    struct uart_driver custom_driver;
+    struct custom_uart_port custom_port;
+}custom_uart_driver;
 
-static int uart_device_probe(struct platform_device *plat_device) {
-    struct resource *res;
-    
-    dev_info(&plat_device->dev, "Probing custom uart device...\n\n");
-    
-    //getting the respiurces from the DT
-    res = platform_get_resource(plat_device, IORESOURCE_MEM, 0);
-    if(!res) {
-        dev_err(&plat_dev -> dev, "Failde to MAP IO memprt\n\n");
-        return -ENODEV;
+static unsigned int is_rx_fifo_empty(struct uart_port *port) {
+    struct custom_uart_port * custom_port = container_of(port, struct custom_uart_port, port);
+    u32 status = ioread32(custom_port->uart_base + UART_STATUS_REG);
+    /*
+        bit 0 indicats if the RX fifo has data:
+        '0' = empty
+        '1' = has data
+    */
+    pr_info("custom_uart: RX status = 0x%08x\n", status);
+    if((status & (1 << RX_FIFO_EMPTY_BIT_INDEX)) == 0)
+        return 0;
+    else
+        return 1;
+}
+
+static unsigned int is_tx_fifo_empty(struct uart_port *port) {
+    struct custom_uart_port *custom_port = container_of(port, struct custom_uart_port, port);
+    u32 status = ioread32(custom_port->uart_base + UART_STATUS_REG);
+    /*
+        bit 3 indicats if the TX fifi is full:
+        '0' = not full
+        '1' = full
+    */
+    pr_info("custom_uart: TX status = 0x%08x\n", status);
+    if((status & (1 << TX_FIFO_FULL_BIT_INDEX)) == 0)
+        return 1; //fifo is not full
+    else
+        return 0; // fifo full
+}
+
+static void custom_uart_start_tx(struct uart_port *port) {
+    struct custom_uart_port *custom_port = container_of(port, struct custom_uart_port, port);
+    char ch;
+    pr_info("custom_uart: start_tx() called\n");
+    while (is_tx_fifo_empty(port)) {
+        if (uart_circ_empty(&port->state->xmit)) {
+            pr_info("custom_uart: TX buffer empty\n");
+            break;
+        }
+        ch = port->state->xmit.buf[port->state->xmit.tail];
+        pr_info("custom_uart: TX char = 0x%02x\n", ch);
+        iowrite32(ch, custom_port->uart_base + UART_TX_REG);
+
+        port->state->xmit.tail = (port->state->xmit.tail + 1) & (UART_XMIT_SIZE - 1);
     }
 
-    // map the physical addres to the kernel
-    uart_base = devm_ioremap_resource(&plat_dev -> dev, res);
-    if (IS_ERR(uart_base)) {
-        dev_err(&plat_dev->dev, "Failed to map IO memory\n");
-        return PTR_ERR(uart_base);
+    if (uart_circ_chars_pending(&port->state->xmit) < WAKEUP_CHARS)
+        uart_write_wakeup(port);
+}
+
+static irqreturn_t custom_uart_start_rx(int irq, void *dev_id) {
+    struct uart_port *port = dev_id;
+    struct custom_uart_port *custom_port = container_of(port, struct custom_uart_port, port);
+    char rx_data;
+    pr_info("custom_uart: IRQ handler triggered\n");
+    while(is_rx_fifo_empty(port)) {
+        rx_data = ioread32(custom_port->uart_base + UART_RX_REG) & 0xFF;
+        pr_info("custom_uart: RX char = 0x%02x\n", rx_data);
+        uart_insert_char(port, 0, 0, rx_data, TTY_NORMAL);
     }
-    
-    // Register character device
-    major = register_chrdev(0, DRIVER_NAME, &uart_fops);
-    if (major < 0) {
-        dev_err(&plat_device->dev, "Failed to register char device\n");
-        return major;
+    tty_flip_buffer_push(&port->state->port);
+    return IRQ_HANDLED;    
+}
+
+static int custom_uart_startup(struct uart_port *port) {
+    pr_info("custom_uart: startup() - requesting IRQ %d\n", port->irq);
+    if (request_irq(port->irq, custom_uart_start_rx, 0, "custom_uart_port", port)) {
+        pr_err("custom_uart: Failed to request IRQ %d\n", port->irq);
+        return -EBUSY;
     }
 
-    // Create device class
-    uart_class = class_create(THIS_MODULE, DRIVER_NAME);
-    if (IS_ERR(uart_class)) {
-        unregister_chrdev(major, DRIVER_NAME);
-        dev_err(&plat_device->dev, "Failed to create class\n");
-        return PTR_ERR(uart_class);
-    }
-    
-    // Create device node /dev/ttyCustomUart
-    uart_device = device_create(uart_class, NULL, MKDEV(major, 0), NULL, DRIVER_NAME);
-    if (IS_ERR(uart_device)) {
-        class_destroy(uart_class);
-        unregister_chrdev(major, DRIVER_NAME);
-        dev_err(&plat_device->dev, "Failed to create device\n");
-        return PTR_ERR(uart_device);
-    }
-    
-    dev_info(&plat_device->dev, "Custom UART initialized at %p\n", uart_base);
+    pr_info("custom_uart: IRQ %d requested successfully\n", port->irq);
     return 0;
 }
 
-static int uart_device_remove(struct platform_device *pdev) {
-    device_destroy(uart_class, MKDEV(major, 0));
-    class_destroy(uart_class);
-    unregister_chrdev(major, DRIVER_NAME);
-    printk(KERN_INFO "Custom UART driver removed\n");
+static void custom_uart_shutdown(struct uart_port *port) { 
+    pr_info("custom_uart: shutdown() - freeing IRQ %d\n", port->irq);
+    free_irq(port->irq, port); 
+}
+
+static const struct uart_ops custom_uart_ops = {
+    .tx_empty = is_tx_fifo_empty,
+    .start_tx = custom_uart_start_tx,
+    //.start_rx = custom_uart_start_rx,
+    .startup = custom_uart_startup,
+    .shutdown = custom_uart_shutdown,
+    // Implement other ops like stop_tx, startup, shutdown, set_termios as needed
+};
+
+static int custom_uart_probe(struct platform_device *pdev) {
+    struct resource *res;
+    int irq, ret;
+
+    pr_info("custom_uart: probe() called\n");
+    // alocating memory for uart driver structre
+    custom_uart_driver.custom_driver.owner = THIS_MODULE,
+    custom_uart_driver.custom_driver.driver_name = DRIVER_NAME,
+    custom_uart_driver.custom_driver.dev_name = "ttyUART",
+    custom_uart_driver.custom_driver.major = 0, 
+    custom_uart_driver.custom_driver.minor = 0,
+    custom_uart_driver.custom_driver.nr = 1,
+
+    // regsiter uart driver with serial core using the low level serial API
+    ret = uart_register_driver(&custom_uart_driver.custom_driver);
+    if(ret) {
+        pr_err("custom_uart_probe: Failed to register UART driver, error %d\n", ret);
+        return ret;
+    }
+
+    //if a matching "compatible" have been found in the kernel this function get the  parameters from the device tree
+    res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+    if (!res) {
+        pr_err("Failed to get memory resource for UART\n");
+        uart_unregister_driver(&custom_uart_driver.custom_driver);
+        return -ENODEV;
+    }
+
+    custom_uart_driver.custom_port.uart_base = devm_ioremap_resource(&pdev->dev, res);
+    if (IS_ERR(custom_uart_driver.custom_port.uart_base))
+        return PTR_ERR(custom_uart_driver.custom_port.uart_base);
+
+    // get the irq number from the device tree
+    irq = platform_get_irq(pdev, 0);
+    if (irq < 0)
+        return irq;
+
+    //maps port settings
+    custom_uart_driver.custom_port.port.membase = custom_uart_driver.custom_port.uart_base;
+    custom_uart_driver.custom_port.port.mapbase = res->start;
+    custom_uart_driver.custom_port.port.irq = irq;
+    custom_uart_driver.custom_port.port.fifosize = 16;
+    custom_uart_driver.custom_port.port.ops = &custom_uart_ops;
+    custom_uart_driver.custom_port.port.flags = UPF_LOW_LATENCY;
+    custom_uart_driver.custom_port.port.line = 0;
+
+    ret = custom_uart_startup(&custom_uart_driver.custom_port.port);
+    if (ret) {
+        pr_err("Failed to start up UART port: %d\n", ret);
+        return ret;
+    }
+
+
+    ret = uart_add_one_port(&custom_uart_driver.custom_driver, &custom_uart_driver.custom_port.port);
+    if (ret) {
+        pr_err("custom_uart: Failed to add UART port\n");
+        return ret;
+    }
+
+    pr_info("custom_uart: UART port registered successfully\n");
+    return 0;
+}
+
+static int custom_uart_remove(struct platform_device *pdev) {
+    custom_uart_shutdown(&custom_uart_driver.custom_port.port);
+    uart_remove_one_port(&custom_uart_driver.custom_driver, &custom_uart_driver.custom_port.port);
+    uart_unregister_driver(&custom_uart_driver.custom_driver);
+    pr_info("UART driver unregistered and port removed\n");
     return 0;
 }
 
@@ -121,68 +192,16 @@ static const struct of_device_id custom_uart_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, custom_uart_of_match);
 
-static struct platform_driver custom_uart_driver = {
+static struct platform_driver custom_uart_platform_driver = {
     .driver = {
         .name = DRIVER_NAME,
         .of_match_table = custom_uart_of_match,
     },
-    .probe = uart_device_probe,
-    .remove = uart_device_remove,
+    .probe = custom_uart_probe,
+    .remove = custom_uart_remove,
 };
 
-module_platform_driver(custom_uart_driver);
-
-
-
-/* 
-static int __init uart_device_init(void) {
-    printk(KERN_INFO "Initializing uart device...\n");
-
-    major = register_chrdev(0, DRIVER_NAME, &uart_fops);//passing arg1 = 0, will make the kernel allocated a major number
-    if(major < 0) {
-        printk(KERN_ERR "Failed to register a device\n");
-        return major;
-    }
-    printk(KERN_INFO "Device has been registerd, major number = %d\n", major);
-
-    uart_base = ioremap(UART_BASE_ADDR, 0x08);
-    if(!uart_base) {
-        printk(KERN_ERR "Mapping UART failed\n");
-        return -ENOMEM;
-    }
-
-    uart_class = class_create(THIS_MODULE, "customuart");
-    if(IS_ERR(uart_class)) {
-        unregister_chrdev(major, DRIVER_NAME);
-        printk(KERN_ERR "Failed to create class for uart\n");
-        return PTR_ERR(uart_class);
-    }
-
-    uart_device = device_create(uart_class, NULL, MKDEV(major, 0), NULL, "ttyCustomUart");
-    if (IS_ERR(uart_device)) {
-        class_destroy(uart_class);
-        unregister_chrdev(major, DRIVER_NAME);
-        printk(KERN_ERR "Failed to create device\n");
-        return PTR_ERR(uart_device);
-    }
-    printk(KERN_INFO "Mapping UART base succeeded\n");
-    printk(KERN_INFO "UART base initialized\n");
-    return 0;
-}
-
-static void __exit uart_device_exit(void) {
-    if(uart_base) {
-        iounmap(uart_base);
-    }
-    device_destroy(uart_class, MKDEV(major, 0));
-    class_destroy(uart_class);
-    unregister_chrdev(major, DRIVER_NAME);
-    printk(KERN_INFO "UART device driver unloaded\n");
-}
-
-module_init(uart_device_init);
-module_exit(uart_device_exit);
-*/
+module_platform_driver(custom_uart_platform_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Harel");

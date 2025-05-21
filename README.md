@@ -14,6 +14,7 @@ Welcome! This repo tracks my personal journey to become a Linux kernel and embed
 | ✅ DONE | [AXI GPIO Kernel Module](https://github.com/harelgrecht/kr260-linux-roadmap) | Replaced Xilinx GPIO driver with a custom kernel module. Controlled GPIO directly from PL with memory-mapped IO. |
 | 🛠 IN PROGRESS | [AXI UART Lite Driver](https://github.com/harelgrecht/kr260-linux-roadmap) | Polling-based driver to replace the default AXI UART Lite. Exposes `/dev/ttyCustomUART`. Includes user-space C library. |
 | 🔜 PLANNED | [Ethernet PHY Expansion](https://github.com/harelgrecht/kr260-linux-roadmap) | Enables extra Ethernet ports by integrating PHYs in PL and modifying DTS. Learning DTS structure and PHY reset flows. |
+| 🔜 PLANNED | [Real Time Patch](https://github.com/harelgrecht/kr260-linux-roadmap) | Learn and enable Real Time Patch to the kria BSP. |
 
 ---
 
